@@ -25,7 +25,7 @@ if torch.cuda.is_available():
 else:
     print('**** CUDA not available - continuing with CPU ****')
 
-plt.ion()   # set matplotlib to interactive mode
+plt.ion()   #set matplotlib to interactive mode
 
 #container for custom errors
 class CustomError(Exception):
@@ -33,11 +33,15 @@ class CustomError(Exception):
     Dummy container for raising errors.
     """
 
-# global constants
+#global constants
 NET_PATH = './networks.tar'
 DATA_PATH = './datasets.tar'
+DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
+FORCE_CPU = False
+TRUNCATE_DATASET = False if torch.cuda.is_available() or FORCE_CPU else True
+TRUNCATED_TRAIN_SIZE = 100
 NETWORK_DEPTH = 4
-BATCH_SIZE = 16
+BATCH_SIZE = 4 if DEVICE == 'cuda' else 16
 LABELS = ('Hospitalized', 'Intubated', 'Deceased', 'Pneumonia')
 COLUMNS = ('Male', 'Pregnant', 'Diabetes', 'Asthma', 'Immunocompromised',
            'Hypertension', 'Other Disease', 'Cardiovascular Disease', 'Obesity', 'Kidney Disease',
@@ -68,14 +72,14 @@ def get_image_dimensions():
     return image_height_width, tuple(normalization_tuple)
 
 
-# global variables
+#global variables
 IMAGE_HEIGHT_WIDTH, NORMALIZATION_TUPLE = get_image_dimensions() #constants initialized by function
+VALIDATION_DATA_INITIALIZED = os.path.exists(DATA_PATH)
 LOSS_RECORDING_RATE = 10
 train_data = list()
 validation_images = list()
 validation_labels = list()
 validation_indices = list()
-VALIDATION_DATA_INITIALIZED = os.path.exists(DATA_PATH)
 network_dictionary = dict()
 loss_dictionary = dict()
 
@@ -126,7 +130,7 @@ def next_row():
     labels = list()
     row = [0, 1, 2]
     idx = 0
-    while row:
+    while row and (not TRUNCATE_DATASET or len(train_data) < TRUNCATED_TRAIN_SIZE):
         while rowcnt < BATCH_SIZE:
             if VALIDATION_DATA_INITIALIZED == 1 and idx in validation_indices:
                 crsr.skip(BATCH_SIZE)
@@ -174,12 +178,6 @@ def gen_test_data(start_index=0):
     """
     for i, labels in enumerate(validation_labels[start_index:], start_index):
         yield validation_images[i], labels
-
-def gettestdata(idx=0):
-    """
-    MARKED FOR REMOVAL: use 'validation_images[idx], validation_labels[idx]' instead
-    """
-    return validation_images[idx], validation_labels[idx]
 
 def create_fake_data(age=None, conditions=None):
     """
@@ -230,7 +228,7 @@ def create_datasets():
     global train_data, validation_images, validation_indices, validation_labels
     if not VALIDATION_DATA_INITIALIZED:
         rowgen = next_row()
-        pbar = tqdm(enumerate(rowgen), total=1200)
+        pbar = tqdm(enumerate(rowgen), total=1300)
         for i, data in pbar:
             train_data.append(data)
         torch.save({'train_data' : train_data,
@@ -250,15 +248,15 @@ def create_datasets():
 fake_data_list = []
 for i in range(BATCH_SIZE):
     fake_data_list.append(create_fake_data(40,["Diabetes"]).squeeze(0))
-testtensor = torch.stack(fake_data_list)
-network_dictionary = NetDictionary(3, testtensor, LABEL_COUNT, NET_PATH)
+test_tensor = torch.stack(fake_data_list)
+network_dictionary = NetDictionary(1, test_tensor, LABEL_COUNT, NET_PATH)
 
 create_datasets()
 
 #train a series of layer configurations and record loss data
 for k, d in network_dictionary.items():
     net = d['net']
-    net.cuda()
+    net.to(DEVICE)
     net.train()
     criterion = d['criterion']
     optimizer = d['optimizer'] 
@@ -273,12 +271,12 @@ for k, d in network_dictionary.items():
     if not network_dictionary.init_from_file:
         pbar = tqdm(enumerate(train_data), total=train_cnt)
         for i, data in pbar:
-            # get the inputs; data is a list of [inputs, labels]
+            #get the inputs; data is a list of [inputs, labels]
             inputs, labels = data
-            inputs, labels = inputs.to('cuda'), labels.to('cuda')
-            # zero the parameter gradients
+            inputs, labels = inputs.to(DEVICE), labels.to(DEVICE)
+            #zero the parameter gradients
             optimizer.zero_grad()
-            # forward + backward + optimize
+            #forward + backward + optimize
             outputs = net(inputs)
             loss = criterion(outputs, labels)
             loss.backward()
@@ -297,7 +295,7 @@ for k, d in network_dictionary.items():
         genfunc = gen_test_data(randomstartindex)
         pbar = tqdm(enumerate(genfunc), total=validation_cnt)
         for j, (tin, tlab) in pbar:
-            tin, tlab = tin.cuda(), tlab.cuda()
+            tin, tlab = tin.to(DEVICE), tlab.to(DEVICE)
             outputs = net(tin)
             loss = criterion(outputs, tlab)
             valid_loss += loss.item()
@@ -305,18 +303,14 @@ for k, d in network_dictionary.items():
                 vlosslist.append((valid_loss-last_loss)/LOSS_RECORDING_RATE)
                 last_loss = valid_loss
                 pbar.set_description(desc='net name: %s; loss: %.3f; validation loss: %.3f'
-                                          % (k, running_loss/train_cnt, valid_loss/(j+1)))
+                                           % (k, running_loss/train_cnt, valid_loss/(j+1)))
                 pbar.update()
-    #print('Training Complete for %s; loss: %.3f; validation loss: %.3f' % (k, running_loss/train_cnt, valid_loss/validationcnt))
 
-    loss_dictionary [k] = {'trainlosses':tlosslist,
-                    'validlosses': vlosslist,
-                    'trainlossavg': running_loss / train_cnt,
-                    'validlossavg': valid_loss / validation_cnt}
+    network_dictionary[k]['loss_dictionary'] = {'trainlosses':tlosslist,
+                                                'validlosses': vlosslist,
+                                               }
     net.cpu()
-    #torch.cuda.empty_cache()
     running_loss = 0.0
     last_loss = 0.0
 print('Finished Training')
-export_dict = network_dictionary.get_export_dict()
-torch.save(export_dict, NET_PATH)
+network_dictionary.export_networks()

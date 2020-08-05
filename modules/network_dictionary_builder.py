@@ -47,7 +47,7 @@ class Net(nn.Module):
         """
         for f in self.fwdlyrs:
             x = eval(f)
-        return F.sigmoid(x)
+        return torch.sigmoid(x)
 
     def get_layers(self, testtensor, funcs, params, debug=0):
         """
@@ -132,10 +132,23 @@ class NetDictionary(dict):
     def __init__(self, network_count, test_tensor, total_labels, import_export_filename, **kwargs):
         """
         Initialize a dictionary of randomly structured CNNs to test various network configurations.
-        INPUTS: network_count:  number of networks to generate
+        args:   network_count:  number of networks to generate
                 test_tensor:    a tensor that can be used to construct network layers
                 total_labels:   the number of labels being predicted for the networks
-        kwargs:     optimizers: list of tuples of form (eval strings for optimizer creation, label)
+                import_export_filename: if file exists on initialization, the information in the
+                                        file will be used to reconstruct a prior network.
+        kwargs: optimizers: list of tuples of form (eval strings for optimizer creation, label)
+                first_conv_layer_depth
+                max_conv_layers
+                min_conv_layers
+                max_kernel_size
+                min_kernel_size
+                max_out_channels
+                min_out_channels
+                init_linear_out_features
+                linear_feature_deadband
+                max_layer_divisor
+                min_layer_divisor
         """
         super(NetDictionary, self).__init__()
         self.net_count = network_count
@@ -144,7 +157,6 @@ class NetDictionary(dict):
         self.__test_tensor = test_tensor
         self.init_from_file = os.path.exists(import_export_filename)
         if self.init_from_file:
-            self.__options = None
             self.__import_networks()
         else:
             self.__build_networks(**kwargs)
@@ -154,6 +166,8 @@ class NetDictionary(dict):
         Read layer info and net stat dicts from disk.
         """
         net_info = torch.load(self.import_export_filename)
+        self.__options = net_info['options'].copy()
+        self.optimizers = self.__options['optimizers']
         for n_key, n_dict in net_info['state_dicts']:
             d = dict()
             d['net_number'] = net_info['net_numbers'][n_key]
@@ -163,7 +177,8 @@ class NetDictionary(dict):
             d['net'].load_state_dict(n_dict)
             d['optimizer_type'] = net_info['optimizer_types'][n_key]
             d['criterion'] = nn.BCELoss()
-            d['optimizer'] = net_info['optims'][n_key]
+            d['optimizer'] = eval([optim[0] for optim in self.optimizers if optim[1] == d['optimizer_type']][0])
+            d['loss_dictionary'] = net_info['loss_dictionaries'][n_key]
             self.__setitem__(n_key, d)
 
     def __build_networks(self, **kwargs):
@@ -251,22 +266,21 @@ class NetDictionary(dict):
         parms.append(self.label_count)
         return fncs,parms
 
-    def get_export_dict(self):
+    def export_networks(self):
         """
-        Write layer info and net stat dicts to disk.
+        Write info required to reconstruct this NetDictionary to disk.
         """
         state_dicts = {key : d['net'].state_dict() for key, d in self.items()}
         net_numbers = {key : d['net_number'] for key, d in self.items()}
         funcs = {key : d['funcs'] for key, d in self.items()}
         params = {key : d['params'] for key, d in self.items()}
         optimizer_types = {key : d['optimizer_type'] for key, d in self.items()}
-        criterions = {key : d['criterion'] for key, d in self.items()}
-        optims = {key : d['optimizer'] for key, d in self.items()}
-        return {'state_dicts':state_dicts,
-                'net_numbers':net_numbers,
-                'funcs':funcs,
-                'params':params,
-                'optimizer_types':optimizer_types,
-                'criterions':criterions,
-                'optims':optims,
-               }
+        loss_dictionaries = {key : d['loss_dictionary'] for key, d in self.items()}
+        torch.save({'state_dicts':state_dicts,
+                    'net_numbers':net_numbers,
+                    'funcs':funcs,
+                    'params':params,
+                    'optimizer_types':optimizer_types,
+                    'options':self.__options,
+                    'loss_dictionaries':loss_dictionaries,
+                   }, self.import_export_filename)
