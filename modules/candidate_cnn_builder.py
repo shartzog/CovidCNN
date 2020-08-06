@@ -81,7 +81,6 @@ validation_images = list()
 validation_labels = list()
 validation_indices = list()
 network_dictionary = dict()
-loss_dictionary = dict()
 
 #global functions
 def create_image_tensor(row):

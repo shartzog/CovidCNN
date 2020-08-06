@@ -13,20 +13,27 @@ import torch.optim as optim
 import numpy as np
 from tqdm import tqdm
 
+DEBUG = False   #prints tensor size after each network layer during network creation
+
 #global classes
 class Net(nn.Module):
     """
     Build pytorch module using eval() on incoming model tensor and lists of eval strings
     for layers and params.
     """
-    def __init__(self, modelinputtensor, layerlist, layerparams):
+    def __init__(self, modelinputtensor, layerlist, layerparams, **kwargs):
         """
-        torch.nn must be imported as nn
-        torch.nn.functional must be imported as F
-        modelinputtensor = example model input tensor (including an arbitrary batch dimension)
-        layerlist = list of pytorch nn fucntions as their 'F' namespace equivalents
+        args:
+        modelinputtensor:   example model input tensor (including an arbitrary batch dimension)
+        layerlist:  list of pytorch nn fucntions as their 'F' namespace equivalents
                     Example: 'nn.MaxPool2d' should be supplied as 'F.max_pool2d'
-        layerparams = list of _independent_ params in their nn form and passed as a tuple.
+        layerparams:    list of _independent_ params in their nn form and passed as a tuple.
+        kwargs:
+        activations:    list of activation functions for forward layers.  the length
+                        of the list must match the length of layerlist exactly even
+                        though the activation function supplied for any pooling
+                        layers will be ignored and the final value supplied will
+                        always be replaced by Sigmoid.
         Example:
             The first conv2d layer will have 3 params in a tuple
                 of form (in_channels, out_channels, kernel_size).
@@ -40,7 +47,8 @@ class Net(nn.Module):
                 features are determined by the preceding layer)
         """
         super(Net, self).__init__()
-        self.lyrs, self.fwdlyrs = self.get_layers(modelinputtensor, layerlist, layerparams)
+        self.activations = kwargs.get('activations', ['F.relu' for layer in layerlist])
+        self.lyrs, self.fwdlyrs = self.get_layers(modelinputtensor, layerlist, layerparams, self.activations, DEBUG)
 
     def forward(self, x):
         """
@@ -49,9 +57,9 @@ class Net(nn.Module):
             x = eval(f)
         return torch.sigmoid(x)
 
-    def get_layers(self, testtensor, funcs, params, debug=0):
+    def get_layers(self, testtensor, funcs, params, activations, debug):
         """
-        Build network layers from supplied test tensor and func/param eval strings.
+        Build network layers from supplied test tensor, funcs, and param eval strings.
         """
         initlayers = nn.ModuleList()
         fwdlayers = list()
@@ -118,7 +126,7 @@ class Net(nn.Module):
         style required in the torch.nn.Module __init__.
         """
         if not funcname == 'max_pool2d':
-            return 'F.relu(self.lyrs[' + str(lyrnum) + '](x))'
+            return self.activations[lyrnum] + '(self.lyrs[' + str(lyrnum) + '](x))'
         else:
             return 'self.lyrs[' + str(lyrnum) + '](x)'
 
@@ -138,25 +146,33 @@ class NetDictionary(dict):
                 import_export_filename: if file exists on initialization, the information in the
                                         file will be used to reconstruct a prior network.
         kwargs: optimizers: list of tuples of form (eval strings for optimizer creation, label)
-                first_conv_layer_depth
-                max_conv_layers
-                min_conv_layers
-                max_kernel_size
-                min_kernel_size
-                max_out_channels
-                min_out_channels
-                init_linear_out_features
-                linear_feature_deadband
-                max_layer_divisor
-                min_layer_divisor
+                default:    [("optim.SGD(d['net'].parameters(), lr=0.0001, momentum=0.9)", "SGD"),
+                             ("optim.Adam(d['net'].parameters(), lr=0.0001)", "Adam"),
+                             ("optim.Adam(d['net'].parameters(), lr=0.00001)", "Adam1")]
+                force_rebuild:  override import from file and recreate network even if
+                                import_export_filename already exists, false
+                conv_layer_activation:  activation function used by conv layers, F.relu
+                first_conv_layer_depth, 4
+                max_conv_layers, 5
+                min_conv_layers, 1
+                max_kernel_size, 7
+                min_kernel_size, 3
+                max_out_channels, 12
+                min_out_channels, 4
+                linear_layer_activation, F.relu
+                init_linear_out_features, 1000
+                linear_feature_deadband, 20
+                max_layer_divisor, 20
+                min_layer_divisor, 4
         """
         super(NetDictionary, self).__init__()
         self.net_count = network_count
         self.label_count = total_labels
         self.import_export_filename = import_export_filename
         self.__test_tensor = test_tensor
-        self.init_from_file = os.path.exists(import_export_filename)
-        if self.init_from_file:
+        self.force_rebuild = kwargs.get('force_rebuild', False)
+        self.init_from_file = os.path.exists(import_export_filename) and not self.force_rebuild
+        if self.init_from_file and not self.force_rebuild:
             self.__import_networks()
         else:
             self.__build_networks(**kwargs)
@@ -168,12 +184,14 @@ class NetDictionary(dict):
         net_info = torch.load(self.import_export_filename)
         self.__options = net_info['options'].copy()
         self.optimizers = self.__options['optimizers']
-        for n_key, n_dict in net_info['state_dicts']:
+        for n_key, n_dict in net_info['state_dicts'].items():
             d = dict()
             d['net_number'] = net_info['net_numbers'][n_key]
-            d['funcs'] = net_info['funcs'][n_key]
+            d['func_list'] = net_info['func_lists'][n_key]
             d['params'] = net_info['params'][n_key]
-            d['net'] = Net(self.__test_tensor, d['funcs'], d['params'])
+            d['activations'] = net_info['activations'][n_key]
+            funcs = [eval(f) for f in d['func_list']]
+            d['net'] = Net(self.__test_tensor, funcs, d['params'],activations=d['activations'])
             d['net'].load_state_dict(n_dict)
             d['optimizer_type'] = net_info['optimizer_types'][n_key]
             d['criterion'] = nn.BCELoss()
@@ -190,6 +208,7 @@ class NetDictionary(dict):
                                       ("optim.Adam(d['net'].parameters(), lr=0.00001)", "Adam1"),
                                      ]),
             'convolution_layer_options': {
+                'activation' : kwargs.get('conv_layer_activation', 'F.relu'),
                 'first_layer_depth' : kwargs.get('first_conv_layer_depth', 4),
                 'max_layers' : kwargs.get('max_conv_layers', 5),
                 'min_layers' : kwargs.get('min_conv_layers', 1),
@@ -199,6 +218,7 @@ class NetDictionary(dict):
                 'min_out_channels' : kwargs.get('min_out_channels', 4),
             },
             'linear_layer_options': {
+                'activation' : kwargs.get('linear_layer_activation', 'F.relu'),
                 'init_out_features' : kwargs.get('init_linear_out_features', 1000),
                 'feature_deadband' : kwargs.get('linear_feature_deadband', 20),
                 'max_layer_divisor' : kwargs.get('max_layer_divisor', 20),
@@ -211,18 +231,23 @@ class NetDictionary(dict):
             lfs, lps = self.__get_linear_layers(self.__options['linear_layer_options'])
             funcs = cfs
             params = cps
-            if random() > 0.3:
+            activations = [self.__options['convolution_layer_options']['activation'] for f in cfs]
+            if (random() > 0.3):
                 funcs.extend([F.max_pool2d])
-                poolsize = np.random.randint(2,4)
-                params.extend([(poolsize, poolsize)])
+                pool_size = np.random.randint(2,4)
+                activations.extend(['F.relu'])
+                params.extend([(pool_size, pool_size)])
             funcs.extend(lfs)
+            activations.extend([self.__options['linear_layer_options']['activation'] for f in lfs])
+            func_list = ['F.' + f.__name__ for f in funcs]
             params.extend(lps)
             for opt in self.optimizers:
                 d = dict()
-                d['net'] = Net(self.__test_tensor, funcs, params)
+                d['net'] = Net(self.__test_tensor, funcs, params, activations=activations)
                 d['net_number'] = i
-                d['funcs'] = funcs
+                d['func_list'] = func_list
                 d['params'] = params
+                d['activations'] = activations
                 d['optimizer_type'] = opt[1]
                 d['criterion'] = nn.BCELoss()
                 d['optimizer'] = eval(opt[0])
@@ -272,15 +297,18 @@ class NetDictionary(dict):
         """
         state_dicts = {key : d['net'].state_dict() for key, d in self.items()}
         net_numbers = {key : d['net_number'] for key, d in self.items()}
-        funcs = {key : d['funcs'] for key, d in self.items()}
+        func_lists = {key : d['func_list'] for key, d in self.items()}
         params = {key : d['params'] for key, d in self.items()}
+        activations = {key : d['activations'] for key, d in self.items()}
         optimizer_types = {key : d['optimizer_type'] for key, d in self.items()}
         loss_dictionaries = {key : d['loss_dictionary'] for key, d in self.items()}
         torch.save({'state_dicts':state_dicts,
                     'net_numbers':net_numbers,
-                    'funcs':funcs,
+                    'func_lists':func_lists,
                     'params':params,
+                    'activations':activations,
                     'optimizer_types':optimizer_types,
                     'options':self.__options,
+                    'test_tensor':self.__test_tensor,
                     'loss_dictionaries':loss_dictionaries,
                    }, self.import_export_filename)
