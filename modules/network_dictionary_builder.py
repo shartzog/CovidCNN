@@ -2,18 +2,26 @@
 Contains Net and NetDictionary class for creating a random collection of CNN structures
 or loading a previously created collection.
 """
+from __future__ import division, print_function
+
 from random import random
 import os.path
 
 import torch
-import torch.nn as nn
-import torch.nn.functional as F
-import torch.optim as optim
+from torch import nn
+from torch import optim
+from torch.nn import functional as F
 
 import numpy as np
+from numpy.random import randint as r_i
 from tqdm import tqdm
 
 DEBUG = False   #prints tensor size after each network layer during network creation
+DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
+if torch.cuda.is_available():
+    torch.cuda.set_device(0)
+else:
+    print('**** CUDA not available - continuing with CPU ****')
 
 #global classes
 class Net(nn.Module):
@@ -146,12 +154,17 @@ class NetDictionary(dict):
                 import_export_filename: if file exists on initialization, the information in the
                                         file will be used to reconstruct a prior network.
         kwargs: optimizers: list of tuples of form (eval strings for optimizer creation, label)
-                default:    [("optim.SGD(d['net'].parameters(), lr=0.0001, momentum=0.9)", "SGD"),
-                             ("optim.Adam(d['net'].parameters(), lr=0.0001)", "Adam"),
-                             ("optim.Adam(d['net'].parameters(), lr=0.00001)", "Adam1")]
+                default=[("optim.SGD(d['net'].parameters(), lr=0.0001, momentum=0.9)", "SGD"),
+                         ("optim.Adam(d['net'].parameters(), lr=0.0001)", "Adam"),
+                         ("optim.Adam(d['net'].parameters(), lr=0.00001)", "Adam1")]
                 force_rebuild:  override import from file and recreate network even if
                                 import_export_filename already exists, false
-                conv_layer_activation:  activation function used by conv layers, F.relu
+                force_training: imported network training is bypassed if set to false
+                                default=True 
+                conv_layer_activation:  activation function used by conv layers
+                                default=F.relu
+                pooling_probability:    approximate fraction of random networks that are assigned
+                                        a pooling layer, default = 0.5
                 first_conv_layer_depth, 4
                 max_conv_layers, 5
                 min_conv_layers, 1
@@ -170,7 +183,10 @@ class NetDictionary(dict):
         self.label_count = total_labels
         self.import_export_filename = import_export_filename
         self.__test_tensor = test_tensor
+        self._trained = False
         self.force_rebuild = kwargs.get('force_rebuild', False)
+        self.force_training = kwargs.get('force_training', True)
+        self.pooling_probability = kwargs.get('pooling_probability', 0.5)
         self.init_from_file = os.path.exists(import_export_filename) and not self.force_rebuild
         if self.init_from_file and not self.force_rebuild:
             self.__import_networks()
@@ -179,7 +195,7 @@ class NetDictionary(dict):
 
     def __import_networks(self):
         """
-        Read layer info and net stat dicts from disk.
+        Read layer info and net state dicts from disk.
         """
         net_info = torch.load(self.import_export_filename)
         self.__options = net_info['options'].copy()
@@ -198,8 +214,12 @@ class NetDictionary(dict):
             d['optimizer'] = eval([optim[0] for optim in self.optimizers if optim[1] == d['optimizer_type']][0])
             d['loss_dictionary'] = net_info['loss_dictionaries'][n_key]
             self.__setitem__(n_key, d)
+        self._trained = True
 
     def __build_networks(self, **kwargs):
+        """
+        build a new set of randomized networks
+        """
         self.__options = {
             'optimizers': kwargs.get('optimizers',
                                      [("optim.SGD(d['net'].parameters(), lr=0.0001, momentum=0.9)",
@@ -232,7 +252,7 @@ class NetDictionary(dict):
             funcs = cfs
             params = cps
             activations = [self.__options['convolution_layer_options']['activation'] for f in cfs]
-            if (random() > 0.3):
+            if (random() < self.pooling_probability):
                 funcs.extend([F.max_pool2d])
                 pool_size = np.random.randint(2,4)
                 activations.extend(['F.relu'])
@@ -260,7 +280,6 @@ class NetDictionary(dict):
         """
         fncs, parms = list(),list()
         fncs.append(F.conv2d)
-        r_i = np.random.randint
         parms.append((c['first_layer_depth'],
                       r_i(c['min_out_channels'], c['max_out_channels'] + 1),
                       r_i(c['min_kernel_size'], c['max_kernel_size']+1)))
@@ -278,7 +297,6 @@ class NetDictionary(dict):
         """
         fncs, parms = list(), list()
         fncs.append(F.linear)
-        r_i = np.random.randint
         parms.append(d['init_out_features'])
         nextoutfeatures = int(d['init_out_features']/r_i(d['min_layer_divisor'],
                                                          d['max_layer_divisor'] + 1)) 
@@ -290,6 +308,60 @@ class NetDictionary(dict):
         fncs.append(F.linear)
         parms.append(self.label_count)
         return fncs,parms
+
+    def train_validate_networks(self, train_data, validation_images, validation_labels, loss_recording_rate):
+        for k, d in self.items():
+            net = d['net']
+            net.to(DEVICE)
+            net.train()
+            criterion = d['criterion']
+            optimizer = d['optimizer']
+            train_losses = []
+            validation_losses = []
+            last_loss = 0.0
+            running_loss = 0.0
+            if self.force_training or not self.init_from_file:
+                pbar = tqdm(enumerate(train_data), total=len(train_data))
+                for i, data in pbar:
+                    #get the inputs; data is a list of [inputs, labels]
+                    inputs, labels = data
+                    inputs, labels = inputs.to(DEVICE), labels.to(DEVICE)
+                    #zero the parameter gradients
+                    optimizer.zero_grad()
+                    #forward + backward + optimize
+                    outputs = net(inputs)
+                    loss = criterion(outputs, labels)
+                    loss.backward()
+                    optimizer.step()
+                    running_loss += loss.item()
+                    if i % loss_recording_rate == loss_recording_rate - 1:
+                        train_losses.append((i + 1, (running_loss - last_loss)/loss_recording_rate))
+                        pbar.set_description(desc='net name: %s; loss: %.3f' % (k, running_loss/(i + 1)))
+                        pbar.update()
+                        last_loss = running_loss
+            last_loss = 0.0
+            valid_loss = 0.0
+            net.eval()
+            with torch.no_grad():
+                pbar = tqdm(enumerate(zip(validation_images,validation_labels)),total=len(validation_labels))
+                for j, (v_in, v_lab) in pbar:
+                    v_in, v_lab = v_in.to(DEVICE), v_lab.to(DEVICE)
+                    outputs = net(v_in)
+                    loss = criterion(outputs, v_lab)
+                    valid_loss += loss.item()
+                    if j % loss_recording_rate == loss_recording_rate - 1:
+                        validation_losses.append((j + 1, (valid_loss - last_loss)/loss_recording_rate))
+                        last_loss = valid_loss
+                        pbar.set_description(desc='net name: %s; loss: %.3f; validation loss: %.3f'
+                                                % (k, running_loss/len(train_data), valid_loss/(j + 1)))
+                        pbar.update()
+
+            self[k]['loss_dictionary'] = {'train_losses':train_losses,
+                                          'validation_losses': validation_losses,
+                                         }
+            net.cpu()
+        self._trained = True
+
 
     def export_networks(self):
         """
