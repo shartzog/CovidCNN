@@ -8,7 +8,7 @@ Built Using:
 
 Modules:
  - network_dictionary_builder.py:
-    builds a series of randomized CNNs based on provided test tensor.
+    builds a series of randomized CNNs based on provided test tensor.<br>
     kwargs can be used to apply constraints including a list of optimizers to test for all nets.
     includes training, importing, and exporting functions for entire net dict.
     NOT specific to CovidCNN.  Could be utilized in other applications.
