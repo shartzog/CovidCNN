@@ -9,7 +9,7 @@ from PIL import Image
 import PIL
 import seaborn as sns
 from tqdm import tqdm
-from network_dictionary_builder import NetDictionary
+from modules.network_dictionary_builder import NetDictionary
 
 plt.ion()
 
@@ -140,7 +140,6 @@ class NetDictionaryAnalyzer():
         series_dict.update({'max_loss_optimizer_efficiency':(1/(param_count*max_valid_loss))*10000.0,
                             'min_loss_optimizer_efficiency':(1/(param_count*min_valid_loss))*10000.0,
                             'param_count':param_count,
-                            'param_count':param_count,
                             'conv_layer_count':conv_layer_count,
                             'has_pool':has_pool,
                             'lin_layer_count':lin_layer_count})
@@ -149,7 +148,8 @@ class NetDictionaryAnalyzer():
     
     def plot_losses(self, net_numbers=None):
         '''
-        change to kwargs and allow user to specify hue and style
+        plot losses for each iteration separated by net number.  colors are assigned based on optimizer, and
+        style is determined by loss type.
         '''
         if net_numbers == None:
             net_numbers = list({net_d_entry['net_number'] for k, net_d_entry in self.net_dictionary.items()})
@@ -164,6 +164,13 @@ class NetDictionaryAnalyzer():
                          hue='optimizer_type',
                          style='loss_type',
                          data=self.net_losses_df[self.net_losses_df.net_number==net_numbers[i]])
-            ax.set_title('Conv Layers: ' + str(self.net_summary_df[self.net_summary_df.net_number==net_numbers[i]].conv_layer_count))
+            ax.set_title('Conv Layers: ' + str(int(self.net_summary_df[self.net_summary_df.net_number==
+                                                                       net_numbers[i]].conv_layer_count)) +
+                         ', Has Pool: ' + str(int(self.net_summary_df[self.net_summary_df.net_number==
+                                                                       net_numbers[i]].has_pool)) +
+                         ', Linear Layers: ' + str(int(self.net_summary_df[self.net_summary_df.net_number==
+                                                                       net_numbers[i]].lin_layer_count)) +
+                         ', Net Number: ' + str(net_numbers[i])
+                        )
 
 

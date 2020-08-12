@@ -6,12 +6,19 @@ Built Using:
  - pytorch 1.5.0+cpu
  - torchvision 0.6.0+cpu
 
-v1 is a multiclass example that is basically equivalent to the OOTB CIFAR example.
-v2 is my first attempt at a multi label model and does not account for age effectively.
-v3 incorporates age as the 'alpha' channel rather than a discreet set of pixels and performs fairly well.  I'm still working to optimize the NN structure and improve performance visualization.
+Modules:
+ - network_dictionary_builder.py:
+    builds a series of randomized CNNs based on provided test tensor.
+    kwargs can be used to apply constraints including a list of optimizers to test for all nets.
+    includes training, importing, and exporting functions for entire net dict.
+    NOT specific to CovidCNN.  Could be utilized in other applications.
+ - network_dictionary_analyzer.py:
+    aggregates data for all nets/optimizers in a given network dictionary.
+    provides trending functions to analyze and compare randomized nets.
+    NOT specific to CovidCNN.  Could be utilized in other applications.
+ - utilities.py:
+    functions required to support CovidCNN efforts.
+    includes class for initializing, storing, and recalling train/test data.
+    translates binary string data (e.g. "00100110") + pt age to image and vice versa.
 
-To test, extract the appropritate 7z archive to the directory containing the script and rename the .txt file to .tar.
-
-To train, contact me for details on setting up a DB based on the Mexican Covid data set.
-
-testcovid.png is an example of how an "imagized" covid case looks.
+See candidate_cnn_builder.ipynb for an example of how these modules can be implemented.
