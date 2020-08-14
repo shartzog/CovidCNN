@@ -13,11 +13,11 @@ from modules.network_dictionary_builder import NetDictionary
 
 plt.ion()
 
-class NetDictionaryAnalyzer():
+class NetDictionaryAnalyzer:
     '''
     combines the loss dictionary objects for each net in a net dictionary into
     two consolidated dataframes to enable quick loss trend comparisons and summary
-    reports 
+    reports
     '''
     def __init__(self, net_dictionary, **kwargs):
         '''
